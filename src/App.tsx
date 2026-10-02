@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   auth, 
   onAuthStateChanged, 
@@ -894,9 +894,61 @@ export default function App() {
     return map;
   }, [animes]);
 
-  // Filtered & Sorted animes
-  const filteredAndSortedAnimes = useMemo(() => {
-    let result = animes.filter((anime) => {
+  // Assinatura única dos IDs na coleção do usuário para detectar adição/remoção de animes
+  const animeIdsSignature = useMemo(() => animes.map((a) => a.id).sort().join(','), [animes]);
+
+  // Chave de contexto de navegação e filtros.
+  // A lista SÓ reordena nos momentos solicitados pelo usuário:
+  // - Troca de aba (sair da lista e voltar)
+  // - Troca de status de filtro (ex: Todos, Assistindo, Completos)
+  // - Troca de filtros avançados (gênero, estúdio, formato, ano, nota, etc.)
+  // - Busca por texto
+  // - Troca de ordenação selecionada (Mais recentes, A-Z, etc.)
+  // - Fechamento de modal de detalhes / formulário (ao sair do detalhe e voltar pra lista)
+  // - Inclusão ou exclusão de animes da lista
+  // Enquanto o usuário estiver apenas olhando a aba de lista e clicando em + ou -, a posição visual dos cards PERMANECE 100% CONGELADA no mesmo lugar!
+  const currentContextKey = useMemo(() => {
+    return [
+      activeTab,
+      currentFilter,
+      selectedGenre || '',
+      selectedStudio || '',
+      selectedFormat || '',
+      selectedYear !== null ? selectedYear : '',
+      selectedSource || '',
+      minRating !== null ? minRating : '',
+      airingTodayOnly ? '1' : '0',
+      searchQuery.trim(),
+      sortOption,
+      animeIdsSignature,
+      dataLoading ? 'loading' : 'ready',
+      detailAnime ? 'modal_open' : 'modal_closed',
+      isModalOpen ? 'form_modal_open' : 'form_modal_closed',
+    ].join('::');
+  }, [
+    activeTab,
+    currentFilter,
+    selectedGenre,
+    selectedStudio,
+    selectedFormat,
+    selectedYear,
+    selectedSource,
+    minRating,
+    airingTodayOnly,
+    searchQuery,
+    sortOption,
+    animeIdsSignature,
+    dataLoading,
+    detailAnime,
+    isModalOpen,
+  ]);
+
+  const stableOrderIdsRef = useRef<string[]>([]);
+  const lastSortContextKeyRef = useRef<string>('');
+
+  // Computa a lista com filtros e ordenação atualizados a partir do zero
+  const computeFreshFilteredAndSorted = useCallback((animeList: Anime[]) => {
+    let result = animeList.filter((anime) => {
       // Airing today filter
       if (airingTodayOnly) {
         if (!isAnimeActiveAndAiringToday(anime, todaySchedule)) return false;
@@ -991,17 +1043,59 @@ export default function App() {
 
     return result;
   }, [
-    animes, 
-    currentFilter, 
-    selectedGenre, 
-    airingTodayOnly, 
-    selectedStudio, 
-    selectedFormat, 
-    selectedYear, 
-    selectedSource, 
-    minRating, 
-    searchQuery, 
-    sortOption
+    currentFilter,
+    selectedGenre,
+    airingTodayOnly,
+    todaySchedule,
+    selectedStudio,
+    selectedFormat,
+    selectedYear,
+    selectedSource,
+    minRating,
+    searchQuery,
+    sortOption,
+  ]);
+
+  // Filtered & Sorted animes (Ordem estável e sem saltos enquanto o usuário navega pela tela)
+  const filteredAndSortedAnimes = useMemo(() => {
+    const animesMap = new Map<string, Anime>(animes.map((a) => [a.id, a]));
+    const contextChanged = lastSortContextKeyRef.current !== currentContextKey;
+
+    if (contextChanged || stableOrderIdsRef.current.length === 0) {
+      lastSortContextKeyRef.current = currentContextKey;
+      const freshlySorted = computeFreshFilteredAndSorted(animes);
+      stableOrderIdsRef.current = freshlySorted.map((a) => a.id);
+      return freshlySorted;
+    }
+
+    // Mesmo contexto (usuário está olhando a lista e clicou em + ou - ou alterou o episódio):
+    // Preserva rigorosamente a ordem visual anterior para o card NÃO subir ou pular de posição!
+    const orderedList: Anime[] = [];
+    const includedIds = new Set<string>();
+
+    for (const id of stableOrderIdsRef.current) {
+      const item = animesMap.get(id);
+      if (item) {
+        orderedList.push(item);
+        includedIds.add(id);
+      }
+    }
+
+    // Caso novos animes correspondentes tenham surgido, adiciona de forma segura ao final
+    const freshlyFiltered = computeFreshFilteredAndSorted(animes);
+    for (const item of freshlyFiltered) {
+      if (!includedIds.has(item.id)) {
+        orderedList.push(item);
+        includedIds.add(item.id);
+      }
+    }
+
+    stableOrderIdsRef.current = orderedList.map((a) => a.id);
+    return orderedList;
+  }, [
+    animes,
+    currentContextKey,
+    computeFreshFilteredAndSorted,
   ]);
 
   // Handlers
